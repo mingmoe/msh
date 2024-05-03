@@ -23,3 +23,13 @@ pub struct UnexpectCharacterError{
     pub diagnostic:ParseDiagnostic
 }
 
+#[derive(Error, Diagnostic, Debug)]
+#[error("expect to get {} but get end-of-file",.expect)]
+#[diagnostic()]
+pub struct UnexpectEndOfSource{
+    pub expect:String,
+    #[diagnostic_source()]
+    pub diagnostic:ParseDiagnostic
+}
+
+

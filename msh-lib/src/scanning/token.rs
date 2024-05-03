@@ -1,6 +1,7 @@
+use miette::Diagnostic;
 use unicode_ident::{is_xid_continue,is_xid_start};
 
-use super::{error::{ParseDiagnostic, UnexpectCharacterError}, span::SourceSpan, text::SourceText};
+use super::{error::{ParseDiagnostic, UnexpectCharacterError, UnexpectEndOfSource}, span::SourceSpan, text::SourceText};
 use std::{rc::Rc, sync::Arc};
 
 pub enum TokenType{
@@ -123,10 +124,31 @@ impl TokenStream{
         self.is_end()
     }
 
+    pub fn move_back(&mut self){
+        if self.index == 0{
+            return;
+        }
+
+        self.index -= 1;
+    }
+
     pub fn get_current(&self)->Option<char>{
         match self.is_end(){
             true => None,
             false => Some((self.source.text_chars.get(self.index as usize).unwrap()).1)
+        }
+    }
+
+    pub fn get_some(&self,length:u64)->Option<String>{
+        let mut got = String::with_capacity(length as usize);
+
+        while let Some(c) = self.get_current() && got.len() != length as usize{
+            got.push(c);
+        }
+
+        match got.len() as u64 == length{
+            true => Some(got),
+            false=> None
         }
     }
 
@@ -147,7 +169,7 @@ impl TokenStream{
         let mut identification = String::with_capacity(32);
 
         if let Some(c) = self.get_current() && is_xid_start(c){
-            
+            identification.push(c);
         }
         else{
             return Err(UnexpectCharacterError{
@@ -164,5 +186,135 @@ impl TokenStream{
 
         Ok(identification)
     }
+
+    pub fn read_string(&mut self)->Result<String,Box<dyn Diagnostic>>{
+        if let Some(c) = self.get_current() && c == '"'{
+            self.move_next();
+        }
+        else{
+            return Err(Box::new(UnexpectCharacterError{
+                diagnostic: self.get_diagnotic(1),
+                expect: "a string begin with \"".to_string(),
+                actual: "others".to_string()
+            }));
+        }
+
+        let mut string = String::with_capacity(32);
+
+        let mut end = false;
+        while let Some(c) = self.get_current(){
+            if c == '"'{
+                end = true;
+                self.move_next();
+                break;
+            }
+
+            if c == '\\'{
+                // try move
+                self.move_next();
+                if let Some(next_c) = self.get_current(){
+                    match next_c{
+                        '0' =>{
+                            string.push('\0');
+                        },
+                        '\\' =>{
+                            string.push('\\');
+                        },
+                        'r'=>{
+                            string.push('\r');
+                        },
+                        'n' => {
+                            string.push('\n');
+                        },
+                        't' => {
+                            string.push('\t');
+                        },
+                        '\''=>{
+                            string.push('\'');
+                        },
+                        '"'=>{
+                            string.push('"');
+                        },
+                        // as the two characters version of \u
+                        'x'=>{
+                            // get next 2 character
+                            match self.get_some(2){
+                                Some(str)=>{
+                                    string.push(char::from_u32(u32::from_str_radix(&str,16).unwrap()).unwrap());
+                                },
+                                None=>{
+                                    return Err(Box::new(UnexpectEndOfSource{
+                                        diagnostic: self.get_diagnotic(1),
+                                        expect: "a two-characters hexadecimal unicode code point after \\x".to_string(),
+                                    }));
+                                }
+                            }
+                        },
+                        'u' => {
+                            // get next 4 character
+                            match self.get_some(4){
+                                Some(str)=>{
+                                    string.push(char::from_u32(u32::from_str_radix(&str,16).unwrap()).unwrap());
+                                },
+                                None=>{
+                                    return Err(Box::new(UnexpectEndOfSource{
+                                        diagnostic: self.get_diagnotic(1),
+                                        expect: "a four-characters hexadecimal unicode code point after \\u".to_string(),
+                                    }));
+                                }
+                            }
+                        },
+                        _ => {
+                         return Err(Box::new(UnexpectCharacterError{
+                            diagnostic: self.get_diagnotic(1),
+                            expect: "a escape sequence after \\".to_string(),
+                            actual: "unknown escape sequence".to_string()
+                        }));               
+                        }
+                    }
+                }
+                else{
+                    self.move_back();
+                    return Err(Box::new(UnexpectEndOfSource{
+                        expect: "a escape sequence after \\".to_string(),
+                        diagnostic: self.get_diagnotic(1)
+                    }));
+
+                }
+            }
+
+            else{
+                string.push(c);
+            }
+            self.move_next();
+        }
+
+        if !end{
+            return Err(Box::new(UnexpectEndOfSource{
+                expect: "a \" to end string".to_string(),
+                diagnostic: self.get_diagnotic(1)
+            }));
+        }
+
+        Ok(string)
+    }
 }
 
+#[cfg(test)]
+pub mod test{
+    use super::*;
+
+    #[test]
+    fn token_stream_parse() {
+        let source=  Arc::from(SourceText::from_memory("a line\n123yes\nbelow"));
+        let mut stream = TokenStream::from(source.clone());
+
+        stream.read_identification().unwrap();
+        stream.skip_blank();
+        stream.read_identification().unwrap();
+        stream.skip_blank();
+        let r = stream.read_identification();
+        assert!(r.is_err());
+    }
+
+}
