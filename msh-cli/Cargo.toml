@@ -1,0 +1,8 @@
+[package]
+name = "msh-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+msh-lib = { path = "../msh-lib" }
+
